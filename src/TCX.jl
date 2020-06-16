@@ -1,28 +1,3 @@
-module TCX
-using EzXML, Dates, DataFrames, Geodesy
-import Base.show
-
-export parse_tcx_dir, parse_tcx_file, getActivityType, getDataFrame, getDistance, getDistance2, getDuration, getAverageSpeed, getAveragePace
-
-struct TrackPoint
-    Time::DateTime
-    Latitude::Float64
-    Longtitude::Float64
-    HeartRateBpm::Int32
-    AltitueMeter::Float64
-    DistanceMeter::Float64
-end
-
-struct TCXRecord
-    Id::DateTime
-    Name::String
-    ActivityType::String
-    DistanceStatic::Float64
-    DurationStatic::Float64
-    HeartRate::Int32
-    TrackPoints::Array{TrackPoint}
-end
-
 function parse_tcx_file(file::String)
     file_path = abspath(file)
     if isfile(file_path) == false
@@ -70,23 +45,16 @@ function parse_tcx_file(file::String)
     tp_Points = findall("/*/*[1]/*/*[2]/*[9]/*", xmldoc)   
     aTrackPoints = Array{TrackPoint, size(tp_Points, 1)}[]
     for tp in tp_Points
-        xtime = nodecontent(findfirst("./*[1]", tp))
+        xtime = nodecontent(findfirst("./*[local-name()='Time']", tp))
         tp_time = convertToDateTime(xtime)
-        xlat = findfirst("./*[2]/*[1]", tp)
-        if xlat !== nothing
-            tp_lat = parse(Float64, nodecontent(xlat))
-        else
-            continue
-        end
-        tp_lont = parse(Float64, nodecontent(findfirst("./*[2]/*[2]", tp)))
-        xbpm = findfirst("./*[5]/*[1]", tp)
-        if xbpm !== nothing
-            tp_bpm = parse(Int32, nodecontent(findfirst("./*[5]/*[1]", tp)))
-        else
-            tp_bm = 0
-        end
-        tp_dist = parse(Float64, nodecontent(findfirst("./*[3]", tp)))
-        tp_alt = parse(Float64, nodecontent(findfirst("./*[4]", tp)))
+
+        tp_lat = parseNode(Float64, "./*[local-name()='Position']/*[local-name()='LatitudeDegrees']", tp)
+ 
+        tp_lont = parse(Float64, nodecontent(findfirst("./*[local-name()='Position']/*[local-name()='LatitudeDegrees']", tp)))
+ 
+        tp_bpm = parseNode(Int32, "./*[local-name()='HeartRateBpm']/*[1]", tp)
+        tp_dist = parseNode(Float64, "./*[local-name()='TPX']", tp)
+        tp_alt = parseNode(Float64, "./*[local-name()='AltitudeMeters']", tp)
 
         aTrackPoints = vcat(aTrackPoints, TrackPoint(tp_time, tp_lat, tp_lont, tp_bpm, tp_dist, tp_alt))
     end
@@ -94,100 +62,11 @@ function parse_tcx_file(file::String)
     return 200, TCXRecord(aId, aName, aType, aDistance, aTime, aHeartRateBpm, aTrackPoints)
 end
 
-function parse_tcx_dir(path::String)
-    if ispath(path) == false
-        @warn "Invalid path: $path"
-        return 500, nothing
-    end
-
-    tcxArray = Array{TCXRecord}[]
-    searchdir(path, key) = filter(x->occursin(key, x), readdir(path))
-
-    for f in searchdir(path, ".tcx")
-        err, tcx = parse_tcx_file(joinpath(path, f))
-        if err == 200
-            tcxArray = vcat(tcxArray, tcx)
-        end
-    end
-
-    if length(tcxArray) > 0
-        return 200, tcxArray
+function parseNode(dType, path, node)
+    node_check = findfirst(path, node)
+    if node_check !== nothing
+        return parse(dType, nodecontent(node_check))
     else
-        return 404, nothing
+        return dType(0)
     end
 end
-
-function getActivityType(record::TCXRecord)
-    return record.ActivityType
-end
-
-function getDataFrame(record::TCXRecord)
-    return DataFrame(record.TrackPoints)
-end
-
-function getDataFrame(tcxArray::Array{Any, 1})
-    aTP = Array{TrackPoint}[]
-    for t in tcxArray
-        aTP = vcat(aTP, t.TrackPoints)
-    end
-    return DataFrame(aTP)
-end
-
-function getDistance(record::TCXRecord)
-    return record.DistanceStatic
-end
-
-function getDistance2(record::TCXRecord)
-    total_distance = 0
-    df = getDataFrame(record)
-    num_of_rows = size(df, 1)
-    for i in 1:num_of_rows
-        if i < num_of_rows
-            total_distance += distance(
-                                       LLA(df[i, :Latitude], df[i, :Longtitude], df[i, :AltitueMeter]),
-                                       LLA(df[i+1, :Latitude], df[i+1, :Longtitude], df[i+1, :AltitueMeter])
-               )
-        end
-    end
-    return total_distance
-end
-
-function getAverageSpeed(record::TCXRecord)
-    return (record.DistanceStatic /1000) / (record.DurationStatic / 3600)  # km/h
-end
-
-function getAveragePace(record::TCXRecord)
-    return (record.DurationStatic / 60) / (record.DistanceStatic / 1000) # min/km
-end
-
-function getDuration(record::TCXRecord)
-    return record.DurationStatic
-end
-
-#=
-= Converts a datetime string into the proper datetime based on string length.
-=
-= Will assume that an ArgumentError is due to
-= https://github.com/JuliaLang/julia/issues/23049 and will attempt to work
-= around this.
-=#
-function convertToDateTime(datestr::String)
-    DictDateFormats = Dict(
-        :24 => "yyyy-mm-ddTHH:MM:SS.sssZ",
-        :20 => "yyyy-mm-ddTHH:MM:SSZ",
-    )
-    try
-        return DateTime(datestr, DictDateFormats[length(datestr)])
-    catch e
-        if isa(e, ArgumentError)
-            return DateTime(
-                datestr[1:end-1], DictDateFormats[length(datestr)][1:end-1]
-            )
-        else
-            throw(e)
-        end
-    end
-end
-
-Base.show(io::IO, tcx::TCXRecord) = print(io, "$(tcx.ActivityType) $(tcx.DistanceStatic/1000) km at $(tcx.Id) for $(tcx.DurationStatic) seconds.")
-end #module_end
